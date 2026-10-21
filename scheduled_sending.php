@@ -1602,7 +1602,7 @@ class scheduled_sending extends rcube_plugin
         $rc = $this->rc;
         $cfg = $rc->config;
 
-        $token = rcube_utils::get_input_value('_token', rcube_utils::INPUT_GPC);
+        $token = $this->ss_worker_request_token();
         $need  = $cfg->get('scheduled_sending_worker_token', null);
         if (!$need || !$token || !hash_equals((string)$need, (string)$token)) {
             $this->ss_debug(array('msg'=>'send_due denied','time'=>date('c'),'remote'=>$_SERVER['REMOTE_ADDR'] ?? ''));
@@ -1842,10 +1842,23 @@ class scheduled_sending extends rcube_plugin
         return $args;
     }
 
+    /**
+     * Worker token from the X-Scheduled-Sending-Token header. Falls back to _token
+     * so existing cron entries that still pass it in the URL keep working.
+     */
+    private function ss_worker_request_token()
+    {
+        if (!empty($_SERVER['HTTP_X_SCHEDULED_SENDING_TOKEN'])) {
+            return (string) $_SERVER['HTTP_X_SCHEDULED_SENDING_TOKEN'];
+        }
+
+        return (string) rcube_utils::get_input_value('_token', rcube_utils::INPUT_GPC);
+    }
+
     public function action_worker()
     {
         $rc = $this->rc;
-        $token = rcube_utils::get_input_value('_token', rcube_utils::INPUT_GPC);
+        $token = $this->ss_worker_request_token();
         $cfg_token = $rc->config->get('scheduled_sending_worker_token', '');
         if (!$token || !$cfg_token || !hash_equals($cfg_token, $token)) {
             header('Content-Type: application/json', true, 403);

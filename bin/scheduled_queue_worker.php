@@ -11,6 +11,10 @@
  *   SS_WORKER_URL="https://mail.example.com/roundcube/" SS_WORKER_TOKEN="..." php bin/scheduled_queue_worker.php
  *
  * Set SS_WORKER_VERBOSE=1 to print successful worker responses.
+ * Set SS_WORKER_INSECURE=1 (or --insecure=1) only for a self-signed test server:
+ * it turns off TLS certificate verification.
+ *
+ * The token is sent in the X-Scheduled-Sending-Token header, not in the URL.
  */
 
 date_default_timezone_set('UTC');
@@ -24,10 +28,17 @@ foreach ($argv as $arg) {
 $url   = getenv('SS_WORKER_URL') ?: (@$argv_map['url'] ?: '');
 $token = getenv('SS_WORKER_TOKEN') ?: (@$argv_map['token'] ?: '');
 $verbose = ss_cli_bool(getenv('SS_WORKER_VERBOSE') ?: (@$argv_map['verbose'] ?: false));
+// Certificate checks are on unless explicitly disabled, e.g. for a self-signed dev setup.
+$insecure = ss_cli_bool(getenv('SS_WORKER_INSECURE') ?: (@$argv_map['insecure'] ?: false));
 
 if (!$url || !$token) {
     fwrite(STDERR, "Usage: php bin/scheduled_queue_worker.php --url='https://host/rc/' --token='TOKEN'\n");
     fwrite(STDERR, "Or set SS_WORKER_URL and SS_WORKER_TOKEN in the environment.\n");
+    exit(2);
+}
+
+if (preg_match('/[\r\n]/', $token)) {
+    fwrite(STDERR, "The worker token must not contain line breaks.\n");
     exit(2);
 }
 
@@ -56,7 +67,7 @@ function ss_cli_bool($value)
     return (bool) $value;
 }
 
-function ss_worker_endpoint($url, $token)
+function ss_worker_endpoint($url)
 {
     // Default to _task=login to avoid session redirects
     $sep = (strpos($url, '?') === false) ? '?' : '&';
@@ -66,7 +77,7 @@ function ss_worker_endpoint($url, $token)
         $sep  = '&';
     }
 
-    return $base . $sep . '_action=plugin.scheduled_sending.worker&_token=' . urlencode($token);
+    return $base . $sep . '_action=plugin.scheduled_sending.worker';
 }
 
 function ss_worker_public_html_url($url)
@@ -114,19 +125,29 @@ function ss_worker_http_get($endpoint, $ctx, &$code)
     return $resp;
 }
 
-$endpoint = ss_worker_endpoint($url, $token);
+$endpoint = ss_worker_endpoint($url);
+
+if ($insecure) {
+    fwrite(STDERR, '[' . gmdate('Y-m-d H:i:s') . "] scheduled_sending: TLS certificate verification is disabled (SS_WORKER_INSECURE)\n");
+}
 
 // --- simple GET using PHP streams (no curl dependency)
 $ctx = stream_context_create([
-    'http' => ['method'=>'GET', 'timeout'=>20, 'follow_location'=>1, 'ignore_errors'=>true],
-    'ssl'  => ['verify_peer'=>false, 'verify_peer_name'=>false] // allow self-signed in dev
+    'http' => [
+        'method' => 'GET',
+        'timeout' => 20,
+        'follow_location' => 1,
+        'ignore_errors' => true,
+        'header' => 'X-Scheduled-Sending-Token: ' . $token,
+    ],
+    'ssl' => ['verify_peer' => !$insecure, 'verify_peer_name' => !$insecure],
 ]);
 
 $resp = ss_worker_http_get($endpoint, $ctx, $code);
 if (is_string($resp) && stripos($resp, 'configure your HTTP server to point to the /public_html directory') !== false) {
     $retry_url = ss_worker_public_html_url($url);
     if ($retry_url !== $url) {
-        $endpoint = ss_worker_endpoint($retry_url, $token);
+        $endpoint = ss_worker_endpoint($retry_url);
         $resp = ss_worker_http_get($endpoint, $ctx, $code);
     }
 }

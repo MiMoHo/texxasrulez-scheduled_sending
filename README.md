@@ -169,11 +169,14 @@ Clear Roundcube caches if needed (e.g., remove `temp/*` & `cache/*` contents, ke
 
 The plugin exposes an **HTTP worker action** that sends all messages scheduled at or before “now”. The worker requires the token from your `config.inc.php`.
 
-**Worker URL shape:**
+**Worker URL shape**, with the token sent in the `X-Scheduled-Sending-Token` header:
 
 ```
-https://YOUR-ROUNDCUBE-BASE/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key
+https://YOUR-ROUNDCUBE-BASE/?_task=login&_action=plugin.scheduled_sending.worker
+X-Scheduled-Sending-Token: 32_character_key
 ```
+
+Passing the token as `&_token=...` in the URL still works for existing setups, but URLs end up in web server and proxy logs, so prefer the header.
 
 There are two convenient ways to call it periodically:
 
@@ -192,6 +195,8 @@ php plugins/scheduled_sending/bin/scheduled_queue_worker.php   --url="https://ma
 SS_WORKER_URL="https://mail.example.com/roundcube/" SS_WORKER_TOKEN="32_character_key" php plugins/scheduled_sending/bin/scheduled_queue_worker.php
 ```
 
+The helper sends the token in the header and verifies the server's TLS certificate. Only for a test server with a self-signed certificate, set `SS_WORKER_INSECURE=1` (or `--insecure=1`) to skip that check; the helper prints a warning when it does.
+
 **Cron:** run once per minute (or every 5 minutes if your use-case is lax):
 
 ```cron
@@ -201,13 +206,13 @@ SS_WORKER_URL="https://mail.example.com/roundcube/" SS_WORKER_TOKEN="32_characte
 ### B) Direct HTTP call (curl/wget)
 
 ```bash
-curl -fsS "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key"
+curl -fsS -H "X-Scheduled-Sending-Token: 32_character_key" "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker"
 ```
 
 Cron variant:
 
 ```cron
-* * * * * curl -fsS "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker&_token=32_character_key" >> /var/log/roundcube/scheduled_worker.log 2>&1
+* * * * * curl -fsS -H "X-Scheduled-Sending-Token: 32_character_key" "https://mail.example.com/roundcube/?_task=login&_action=plugin.scheduled_sending.worker" >> /var/log/roundcube/scheduled_worker.log 2>&1
 ```
 
 > The worker is idempotent and gated by a lock (`scheduled_sending_lock_key` / timeout) to avoid overlap.
@@ -228,7 +233,8 @@ Cron variant:
 
 ## 8) Troubleshooting
 
-- **401/403 on worker call**: bad or missing `_token`. Verify `scheduled_sending_worker_token` matches the value you pass.
+- **401/403 on worker call**: bad or missing token (`X-Scheduled-Sending-Token` header or `_token`). Verify `scheduled_sending_worker_token` matches the value you pass.
+- **`request failed (HTTP 0)` from the CLI helper**: often a TLS certificate the helper cannot verify. Fix the certificate, or for a self-signed test server set `SS_WORKER_INSECURE=1`.
 - **Nothing gets sent**: verify the cron is running and the URL points to your Roundcube base. Check that due items exist in `scheduled_queue` and `status` is `queued`.
 - **Timezones**: UI may use `scheduled_timezone`; storage is UTC. Ensure your server clock is correct (NTP) and PHP `date.timezone` is set.
 - **Mail transport**: `scheduled_sending_delivery` uses Roundcube’s SMTP by default. If using `mail` or a relay, ensure it’s configured correctly in Roundcube.
